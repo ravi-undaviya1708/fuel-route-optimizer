@@ -620,6 +620,357 @@ class FuelOptimizerUnitTests(TestCase):
         self.assertFalse(res_with_reserve['feasible'])
         self.assertIn("Infeasible route", res_with_reserve['message'])
 
+    def test_new_york_to_miami_with_safety_reserve_25_miles(self):
+        """
+        Regression test for New York, NY -> Miami, FL route (1,279.55 miles) with safety_reserve_miles: 25.0.
+        Validates:
+        1. Usable range is 475.0 miles (500.0 - 25.0).
+        2. Three refueling stops are selected (CARTERS ONE STOP, QUIKTRIP #7135, Racetrac #2586).
+        3. All 5 distance and detour identities hold exactly:
+           - total_driving_distance_miles == main_route_distance_miles + total_detour_distance_miles (1341.07 == 1279.55 + 61.52)
+           - detour_distance_miles == detour_to_station_miles + detour_from_station_miles for every stop
+           - sum of actual driving legs + final leg == total_driving_distance_miles (400.37 + 413.92 + 378.92 + 147.86 == 1341.07)
+           - final_leg_distance_miles == final_leg_main_route_distance_miles + final_leg_detour_distance_miles (147.86 == 136.58 + 11.28)
+           - total_stops == len(stops) == 3
+        4. Corridor progress sum: sum(distance_from_previous_leg_miles) + final_leg_main_route == 1279.55 miles.
+        5. Every leg is strictly within the usable range (<= 475.0 miles).
+        6. Fuel conservation balance: 50.0 initial + 119.32 purchased == 134.11 consumed + 35.21 destination remaining.
+        7. Total refueling cost is $362.30 ($118.48 + $124.13 + $119.69).
+        """
+        total_road_miles = 1279.55
+        candidate_stations = [
+            {
+                'truckstop_id': 61804,
+                'truckstop_name': 'CARTERS ONE STOP',
+                'address': 'I-95 & SR-301, EXIT 31 & SR-40',
+                'city': 'Stony Creek',
+                'state': 'VA',
+                'retail_price': 2.959,
+                'coordinates': [-77.444276, 36.936132],
+                'projection_coordinates': [-77.394865, 36.930525],
+                'route_mile': 382.89,
+                'distance_from_route_miles': 2.76,
+                'detour_to_station_miles': 17.48,
+                'detour_from_station_miles': 5.65,
+                'detour_distance_miles': 23.13,
+            },
+            {
+                'truckstop_id': 71283,
+                'truckstop_name': 'QUIKTRIP #7135',
+                'address': 'US-17',
+                'city': 'Hardeeville',
+                'state': 'SC',
+                'retail_price': 2.999,
+                'coordinates': [-81.066865, 32.263512],
+                'projection_coordinates': [-81.07978, 32.274072],
+                'route_mile': 787.80,
+                'distance_from_route_miles': 1.05,
+                'detour_to_station_miles': 3.36,
+                'detour_from_station_miles': 7.26,
+                'detour_distance_miles': 10.62,
+            },
+            {
+                'truckstop_id': 72893,
+                'truckstop_name': 'Racetrac #2586',
+                'address': 'I-95 & 20th ST',
+                'city': 'Vero Beach',
+                'state': 'FL',
+                'retail_price': 3.159,
+                'coordinates': [-80.403075, 27.632985],
+                'projection_coordinates': [-80.502556, 27.592172],
+                'route_mile': 1142.97,
+                'distance_from_route_miles': 6.71,
+                'detour_to_station_miles': 16.49,
+                'detour_from_station_miles': 11.28,
+                'detour_distance_miles': 27.77,
+            }
+        ]
+
+        result = self.optimizer.optimize(
+            total_road_miles=total_road_miles,
+            candidate_stations=candidate_stations,
+            safety_reserve_miles=25.0
+        )
+
+        self.assertTrue(result['feasible'])
+        self.assertTrue(result['requires_refueling'])
+        self.assertEqual(result['safety_reserve_miles'], 25.0)
+        self.assertEqual(result['usable_range_miles'], 475.0)
+
+        # Identity 5: Stop count equals length of returned stops array
+        self.assertEqual(result['total_stops'], 3)
+        self.assertEqual(len(result['stops']), 3)
+
+        # Identity 1: total_driving_distance_miles = main_route_distance_miles + total_detour_distance_miles
+        self.assertEqual(result['main_route_distance_miles'], 1279.55)
+        self.assertEqual(result['total_detour_distance_miles'], 61.52)
+        self.assertEqual(result['total_driving_distance_miles'], 1341.07)
+        self.assertEqual(
+            result['total_driving_distance_miles'],
+            round(result['main_route_distance_miles'] + result['total_detour_distance_miles'], 2)
+        )
+
+        # Stop 1 validations
+        stop1 = result['stops'][0]
+        self.assertEqual(stop1['stop_number'], 1)
+        self.assertEqual(stop1['truckstop_id'], 61804)
+        self.assertEqual(stop1['retail_price'], 2.959)
+        self.assertEqual(stop1['route_mile'], 382.89)
+        self.assertEqual(stop1['distance_from_route_miles'], 2.76)
+        self.assertEqual(stop1['distance_from_previous_leg_miles'], 382.89)
+        self.assertEqual(stop1['detour_to_station_miles'], 17.48)
+        self.assertEqual(stop1['detour_from_station_miles'], 5.65)
+        self.assertEqual(stop1['detour_distance_miles'], 23.13)
+        # Identity 2 on Stop 1
+        self.assertEqual(stop1['detour_distance_miles'], round(stop1['detour_to_station_miles'] + stop1['detour_from_station_miles'], 2))
+        self.assertEqual(stop1['actual_leg_distance_miles'], 400.37)
+        self.assertLessEqual(stop1['actual_leg_distance_miles'], 475.0)
+        self.assertEqual(stop1['fuel_consumed_on_leg_gallons'], 40.04)
+        self.assertEqual(stop1['fuel_remaining_on_arrival_gallons'], 9.96)
+        self.assertEqual(stop1['estimated_gallons_purchased'], 40.04)
+        self.assertEqual(stop1['fuel_level_after_refueling_gallons'], 50.0)
+        self.assertEqual(stop1['estimated_cost'], 118.48)
+
+        # Stop 2 validations
+        stop2 = result['stops'][1]
+        self.assertEqual(stop2['stop_number'], 2)
+        self.assertEqual(stop2['truckstop_id'], 71283)
+        self.assertEqual(stop2['retail_price'], 2.999)
+        self.assertEqual(stop2['route_mile'], 787.80)
+        self.assertEqual(stop2['distance_from_route_miles'], 1.05)
+        self.assertEqual(stop2['distance_from_previous_leg_miles'], 404.91)
+        self.assertEqual(stop2['detour_to_station_miles'], 3.36)
+        self.assertEqual(stop2['detour_from_station_miles'], 7.26)
+        self.assertEqual(stop2['detour_distance_miles'], 10.62)
+        # Identity 2 on Stop 2
+        self.assertEqual(stop2['detour_distance_miles'], round(stop2['detour_to_station_miles'] + stop2['detour_from_station_miles'], 2))
+        self.assertEqual(stop2['actual_leg_distance_miles'], 413.92)
+        self.assertLessEqual(stop2['actual_leg_distance_miles'], 475.0)
+        self.assertEqual(stop2['fuel_consumed_on_leg_gallons'], 41.39)
+        self.assertEqual(stop2['fuel_remaining_on_arrival_gallons'], 8.61)
+        self.assertEqual(stop2['estimated_gallons_purchased'], 41.39)
+        self.assertEqual(stop2['fuel_level_after_refueling_gallons'], 50.0)
+        self.assertEqual(stop2['estimated_cost'], 124.13)
+
+        # Stop 3 validations
+        stop3 = result['stops'][2]
+        self.assertEqual(stop3['stop_number'], 3)
+        self.assertEqual(stop3['truckstop_id'], 72893)
+        self.assertEqual(stop3['retail_price'], 3.159)
+        self.assertEqual(stop3['route_mile'], 1142.97)
+        self.assertEqual(stop3['distance_from_route_miles'], 6.71)
+        self.assertEqual(stop3['distance_from_previous_leg_miles'], 355.17)
+        self.assertEqual(stop3['detour_to_station_miles'], 16.49)
+        self.assertEqual(stop3['detour_from_station_miles'], 11.28)
+        self.assertEqual(stop3['detour_distance_miles'], 27.77)
+        # Identity 2 on Stop 3
+        self.assertEqual(stop3['detour_distance_miles'], round(stop3['detour_to_station_miles'] + stop3['detour_from_station_miles'], 2))
+        self.assertEqual(stop3['actual_leg_distance_miles'], 378.92)
+        self.assertLessEqual(stop3['actual_leg_distance_miles'], 475.0)
+        self.assertEqual(stop3['fuel_consumed_on_leg_gallons'], 37.89)
+        self.assertEqual(stop3['fuel_remaining_on_arrival_gallons'], 12.11)
+        self.assertEqual(stop3['estimated_gallons_purchased'], 37.89)
+        self.assertEqual(stop3['fuel_level_after_refueling_gallons'], 50.0)
+        self.assertEqual(stop3['estimated_cost'], 119.69)
+
+        # Final leg validations & Identity 4
+        self.assertEqual(result['final_leg_main_route_distance_miles'], 136.58)
+        self.assertEqual(result['final_leg_detour_distance_miles'], 11.28)
+        self.assertEqual(result['final_leg_distance_miles'], 147.86)
+        self.assertEqual(
+            result['final_leg_distance_miles'],
+            round(result['final_leg_main_route_distance_miles'] + result['final_leg_detour_distance_miles'], 2)
+        )
+        self.assertLessEqual(result['final_leg_distance_miles'], 475.0)
+        self.assertEqual(result['final_leg_fuel_consumed_gallons'], 14.79)
+        self.assertEqual(result['fuel_remaining_at_destination_gallons'], 35.21)
+
+        # Identity 3: Sum of all actual driving legs equals total_driving_distance_miles
+        actual_legs_sum = round(
+            stop1['actual_leg_distance_miles'] +
+            stop2['actual_leg_distance_miles'] +
+            stop3['actual_leg_distance_miles'] +
+            result['final_leg_distance_miles'],
+            2
+        )
+        self.assertEqual(actual_legs_sum, result['total_driving_distance_miles'])
+
+        # Corridor highway progress sum equals main_route_distance_miles
+        corridor_progress_sum = round(
+            stop1['distance_from_previous_leg_miles'] +
+            stop2['distance_from_previous_leg_miles'] +
+            stop3['distance_from_previous_leg_miles'] +
+            result['final_leg_main_route_distance_miles'],
+            2
+        )
+        self.assertEqual(corridor_progress_sum, result['main_route_distance_miles'])
+
+        # Fuel and cost aggregate validations
+        self.assertEqual(result['total_gallons_purchased_at_stops'], 119.32)
+        self.assertEqual(result['total_fuel_cost'], 362.30)
+        self.assertEqual(result['estimated_trip_consumption_gallons'], 134.11)
+
+        # Fuel conservation: starting 50.0 + purchased == consumed + remaining
+        self.assertAlmostEqual(
+            50.0 + result['total_gallons_purchased_at_stops'],
+            result['estimated_trip_consumption_gallons'] + result['fuel_remaining_at_destination_gallons'],
+            places=2
+        )
+
+    def test_safety_reserve_zero_vs_25_miles_comparison(self):
+        """
+        Validates the behavioral difference between safety_reserve_miles: 0.0 and 25.0:
+        At reserve 0.0, the usable range is 500.0 miles and the final leg of 499.01 miles is allowed,
+        resulting in 2 stops ($242.61).
+        At reserve 25.0, the usable range is 475.0 miles, so the 499.01-mile leg is disallowed,
+        requiring a 3rd stop at Vero Beach, FL to maintain the safety buffer ($362.30).
+        """
+        total_road_miles = 1279.55
+        candidate_stations = [
+            {
+                'truckstop_id': 61804,
+                'truckstop_name': 'CARTERS ONE STOP',
+                'retail_price': 2.959,
+                'coordinates': [-77.444276, 36.936132],
+                'route_mile': 382.89,
+                'detour_to_station_miles': 17.48,
+                'detour_from_station_miles': 5.65,
+                'detour_distance_miles': 23.13,
+            },
+            {
+                'truckstop_id': 71283,
+                'truckstop_name': 'QUIKTRIP #7135',
+                'retail_price': 2.999,
+                'coordinates': [-81.066865, 32.263512],
+                'route_mile': 787.80,
+                'detour_to_station_miles': 3.36,
+                'detour_from_station_miles': 7.26,
+                'detour_distance_miles': 10.62,
+            },
+            {
+                'truckstop_id': 72893,
+                'truckstop_name': 'Racetrac #2586',
+                'retail_price': 3.159,
+                'coordinates': [-80.403075, 27.632985],
+                'route_mile': 1142.97,
+                'detour_to_station_miles': 16.49,
+                'detour_from_station_miles': 11.28,
+                'detour_distance_miles': 27.77,
+            }
+        ]
+
+        res_zero = self.optimizer.optimize(
+            total_road_miles=total_road_miles,
+            candidate_stations=candidate_stations,
+            safety_reserve_miles=0.0
+        )
+        self.assertEqual(res_zero['total_stops'], 2)
+        self.assertEqual(res_zero['usable_range_miles'], 500.0)
+        self.assertEqual(res_zero['final_leg_distance_miles'], 499.01)
+        self.assertLessEqual(res_zero['final_leg_distance_miles'], 500.0)
+
+        res_25 = self.optimizer.optimize(
+            total_road_miles=total_road_miles,
+            candidate_stations=candidate_stations,
+            safety_reserve_miles=25.0
+        )
+        self.assertEqual(res_25['total_stops'], 3)
+        self.assertEqual(res_25['usable_range_miles'], 475.0)
+        self.assertEqual(res_25['final_leg_distance_miles'], 147.86)
+        self.assertLessEqual(res_25['final_leg_distance_miles'], 475.0)
+
+    def test_calculation_consistency_invariants(self):
+        """
+        Systematic verification of the five core calculation identities across multi-stop routes:
+        1. total_driving = main_route + total_detour
+        2. detour_distance = detour_to + detour_from
+        3. sum(actual_legs) + final_leg == total_driving
+        4. final_leg = final_main + final_detour
+        5. total_stops == len(stops)
+        And fuel balance: initial + total_purchased == trip_consumed + destination_remaining.
+        """
+        candidates = [
+            {
+                'truckstop_id': 1,
+                'route_mile': 300.0,
+                'retail_price': 3.20,
+                'coordinates': [-77.0, 39.0],
+                'detour_to_station_miles': 5.0,
+                'detour_from_station_miles': 7.0,
+                'detour_distance_miles': 12.0,
+            },
+            {
+                'truckstop_id': 2,
+                'route_mile': 650.0,
+                'retail_price': 3.10,
+                'coordinates': [-80.0, 35.0],
+                'detour_to_station_miles': 4.0,
+                'detour_from_station_miles': 6.0,
+                'detour_distance_miles': 10.0,
+            }
+        ]
+
+        result = self.optimizer.optimize(
+            total_road_miles=950.0,
+            candidate_stations=candidates,
+            safety_reserve_miles=25.0
+        )
+
+        self.assertTrue(result['feasible'])
+        self.assertEqual(result['total_stops'], len(result['stops']))
+
+        # Identity 1
+        self.assertEqual(
+            result['total_driving_distance_miles'],
+            round(result['main_route_distance_miles'] + result['total_detour_distance_miles'], 2)
+        )
+
+        # Identity 2 on each stop
+        for stop in result['stops']:
+            self.assertEqual(
+                stop['detour_distance_miles'],
+                round(stop['detour_to_station_miles'] + stop['detour_from_station_miles'], 2)
+            )
+
+        # Identity 3: All legs sum to total driving distance
+        legs_sum = round(sum(s['actual_leg_distance_miles'] for s in result['stops']) + result['final_leg_distance_miles'], 2)
+        self.assertEqual(legs_sum, result['total_driving_distance_miles'])
+
+        # Identity 4: Final leg equals main + detour
+        self.assertEqual(
+            result['final_leg_distance_miles'],
+            round(result['final_leg_main_route_distance_miles'] + result['final_leg_detour_distance_miles'], 2)
+        )
+
+        # Fuel balance
+        self.assertAlmostEqual(
+            50.0 + result['total_gallons_purchased_at_stops'],
+            result['estimated_trip_consumption_gallons'] + result['fuel_remaining_at_destination_gallons'],
+            places=2
+        )
+
+    def test_optimizer_handles_boundary_and_invalid_safety_reserve(self):
+        """Negative and excessive safety reserve values are cleanly handled and clamped by the optimizer."""
+        candidates = [
+            {
+                'truckstop_id': 1,
+                'route_mile': 300.0,
+                'retail_price': 3.00,
+                'coordinates': [-75.0, 40.0],
+                'distance_from_route_miles': 1.0,
+            }
+        ]
+        # Negative reserve is clamped to 0.0
+        res_neg = self.optimizer.optimize(total_road_miles=600.0, candidate_stations=candidates, safety_reserve_miles=-10.0)
+        self.assertEqual(res_neg['safety_reserve_miles'], 0.0)
+        self.assertEqual(res_neg['usable_range_miles'], 500.0)
+
+        # Excessive reserve (> max_range - 10) is clamped to 490.0
+        res_excess = self.optimizer.optimize(total_road_miles=600.0, candidate_stations=candidates, safety_reserve_miles=600.0)
+        self.assertEqual(res_excess['safety_reserve_miles'], 490.0)
+        self.assertEqual(res_excess['usable_range_miles'], 10.0)
+
+
 
 
 class RouteAPIFuelStopsTests(APITestCase):

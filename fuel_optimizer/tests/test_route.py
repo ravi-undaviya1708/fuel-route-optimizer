@@ -226,3 +226,30 @@ class RouteViewTests(APITestCase):
             self.assertTrue(data2['metadata']['cached']['route'])
             self.assertEqual(call_counts['nominatim'], 2)
             self.assertEqual(call_counts['osrm'], 1)
+
+    def test_invalid_safety_reserve_negative(self):
+        """Negative safety reserve values are rejected with 400 Bad Request."""
+        payload = {
+            'start': 'New York, NY',
+            'destination': 'Philadelphia, PA',
+            'safety_reserve_miles': -5.0
+        }
+        response = self.client.post('/api/route/', payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        data = response.json()
+        self.assertIn('safety_reserve_miles', data.get('details', {}))
+        self.assertIn('greater than or equal to 0.0', str(data))
+
+    def test_invalid_safety_reserve_exceeds_maximum(self):
+        """Safety reserve values greater than 100 miles are rejected with 400 Bad Request."""
+        payload = {
+            'start': 'New York, NY',
+            'destination': 'Philadelphia, PA',
+            'safety_reserve_miles': 150.0
+        }
+        response = self.client.post('/api/route/', payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        data = response.json()
+        self.assertIn('safety_reserve_miles', data.get('details', {}))
+        self.assertIn('less than or equal to 100.0', str(data))
+
